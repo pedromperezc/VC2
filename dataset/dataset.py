@@ -3,44 +3,54 @@ import cv2
 import numpy as np
 from matplotlib import pyplot as plt
 import json
+from sklearn.model_selection import train_test_split
 
-df = pd.read_csv('train.csv')
+df = pd.read_csv("train.csv")
+grouped_df = df.groupby("ImageId")
+grouped_ClassId = grouped_df["ClassId"].apply(list)
+grouped_EncodedPixels = grouped_df["EncodedPixels"].apply(list)
+grouped_ClassId = grouped_ClassId.reset_index()
+grouped_EncodedPixels = grouped_EncodedPixels.reset_index()
+
+df_final = grouped_ClassId.merge(grouped_EncodedPixels, left_on='ImageId', right_on='ImageId')
+
+train_df, test_df = train_test_split(df_final, test_size=0.2, random_state=69)
 
 
-def rle_to_mask(lre, shape=(1600, 256)):
-    '''
-    params:  rle   - run-length encoding string (pairs of start & length of encoding)
-             shape - (width,height) of numpy array to return
+def rle_to_mask(rle, width=1600, height=256):
+    """ Transform run-length encoding string to mask array """
 
-    returns: numpy array with dimensions of shape parameter
-    '''
-    # the incoming string is space-delimited
-    runs = np.asarray([int(run) for run in lre.split(' ')])
+    # Get all rle elements from rle string:
+    rle_list = rle.split()
 
-    # we do the same operation with the even and uneven elements, but this time with addition
-    runs[1::2] += runs[0::2]
-    # pixel numbers start at 1, indexes start at 0
-    runs -= 1
+    # Convert all elements into integers:
+    rle_integers = [int(x) for x in rle_list]
 
-    # extract the starting and ending indeces at even and uneven intervals, respectively
-    run_starts, run_ends = runs[0::2], runs[1::2]
+    # Create pairs in previous list:
+    rle_pairs = np.array(rle_integers).reshape(-1, 2)
 
-    # build the mask
-    h, w = shape
-    mask = np.zeros(h * w, dtype=np.uint8)
-    for start, end in zip(run_starts, run_ends):
-        mask[start:end] = 1
+    # Initialize mask array:
+    mask_array = np.zeros(width * height, dtype=np.uint8)
 
-    # transform the numpy array from flat to the original image shape
-    return mask.reshape(shape)
+    # Populate mask array:
+    for index, length in rle_pairs:
+        index -= 1
+        mask_array[index:index + length] = 1
 
-coco ={
+    # Reshape mask array:
+    mask = mask_array.reshape(width, height).T
+
+    # Return result:
+    return mask
+
+
+coco = {
     "info": {
         "year": "2021",
         "version": "1",
         "description": "Steel Defect Detection",
-        "contributor": "UBA",
-        "url": "",
+        "contributor": "Severstal",
+        "url": "https://www.severstal.com/eng/",
         "date_created": "2021-11-29T19:36:39+00:00"
     },
     "licenses": [
@@ -51,10 +61,6 @@ coco ={
         }
     ],
     "categories": [
-        {
-            "id": 0,
-            "name": "class 0"
-        },
         {
             "id": 1,
             "name": "class 1"},
@@ -70,38 +76,148 @@ coco ={
     ],
     "images": [],
     "annotations": []
-
 }
 
+for i in range(len(train_df)):
+    print(i)
+    img = cv2.imread("train/" + train_df.iloc[i].ImageId)
+    coco["images"].append({"id": i,
+                           "license": 1,
+                           "file_name": train_df.iloc[i].ImageId,
+                           "height": img.shape[0],
+                           "width": img.shape[1]
+                           })
 
-for i in range(len(df)):
-  print(i)
-  row = df.iloc[i]
-  img = cv2.imread("train/"+ row.ImageId)
-  coco["images"].append({"id": row.ImageId[:-4],
-            "license": 1,
-            "file_name": row.ImageId,
-            "height": img.shape[0],
-            "width": img.shape[1]
-        })
-  mask = rle_to_mask(row.EncodedPixels)
-  contours, hierarchy = cv2.findContours(mask, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
-  mask_layer = np.reshape(contours[0], (2 * contours[0].shape[0],))
-  y, x, h, w = cv2.boundingRect(contours[0])
+    for j in range(len(train_df.iloc[i].ClassId)):
 
+        mask = rle_to_mask(train_df.iloc[i].EncodedPixels[j])
+        contours, hierarchy = cv2.findContours(mask, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
 
-  # plt.imshow(img4)
-  # plt.show()
+        # for p, contour in enumerate(contours):
+        #     mask_layer = np.reshape(contour, (2 * contour.shape[0],))
+        #     x, y, w, h = cv2.boundingRect(contour)
+        #
+        #     # Se agrega esto por un bug, si la segmentación solo tiene 4 puntos da error en la validación
+        #     if len(mask_layer) == 4:
+        #         mask_layer = np.append(mask_layer, mask_layer[0:2])
+        # coco["annotations"].append({
+        #     "id": str(i) + "_" + str(j) + "_" + str(p),
+        #     "area": h * w,
+        #     "image_id": i,
+        #     "category_id": int(train_df.iloc[i].ClassId[j]),
+        #     "bbox": [x, y, w, h],
+        #     "segmentation": [[float(x) for x in mask_layer.tolist()]],
+        #     "iscrowd": 0
+        # })
 
-  coco["annotations"].append({
-            "id": i,
-            "area": h*w,
-            "image_id": row.ImageId[:-4],
-            "category_id": int(row.ClassId),
-            "bbox": [x,y,w,h],
-            "segmentation": [mask_layer.tolist()],
-            "iscrowd": 0
-        })
+        for p, contour in enumerate(contours):
+            contour_array = contour.reshape(-1, 2)
+            px = [a[0] for a in contour_array]
+            py = [b[1] for b in contour_array]
+            poly = [(x + 0.5, y + 0.5) for x, y in zip(px, py)]
+            poly = [p for x in poly for p in x]
+            x0, y0 = int(np.min(px)), int(np.min(py))
+            x1, y1 = int(np.max(px)), int(np.max(py))
+            if (len(poly) % 2) == 0 and len(poly) >= 6:
+                coco["annotations"].append({
+                    "id": str(i) + "_" + str(j) + "_" + str(p),
+                    "area": abs(x0 - x1) * abs(y0 - y1),
+                    "image_id": i,
+                    "category_id": int(train_df.iloc[i].ClassId[j]),
+                    "bbox": [x0, y0, abs(x0 - x1), abs(y0 - y1)],
+                    "segmentation": [poly],
+                    "iscrowd": 0
+                })
 
 with open('train_coco_dataset.json', 'w') as f:
+    json.dump(coco, f)
+
+
+
+coco = {
+    "info": {
+        "year": "2021",
+        "version": "1",
+        "description": "Steel Defect Detection",
+        "contributor": "Severstal",
+        "url": "https://www.severstal.com/eng/",
+        "date_created": "2021-11-29T19:36:39+00:00"
+    },
+    "licenses": [
+        {
+            "id": 1,
+            "url": "https://creativecommons.org/publicdomain/zero/1.0/",
+            "name": "Public Domain"
+        }
+    ],
+    "categories": [
+        {
+            "id": 1,
+            "name": "class 1"},
+        {
+            "id": 2,
+            "name": "class 2"},
+        {
+            "id": 3,
+            "name": "class 3"},
+        {
+            "id": 4,
+            "name": "class 4"}
+    ],
+    "images": [],
+    "annotations": []
+}
+
+for i in range(len(test_df)):
+    print(i)
+    img = cv2.imread("train/" + test_df.iloc[i].ImageId)
+    coco["images"].append({"id": i,
+                           "license": 1,
+                           "file_name": test_df.iloc[i].ImageId,
+                           "height": img.shape[0],
+                           "width": img.shape[1]
+                           })
+
+    for j in range(len(test_df.iloc[i].ClassId)):
+
+        mask = rle_to_mask(test_df.iloc[i].EncodedPixels[j])
+        contours, hierarchy = cv2.findContours(mask, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+
+        # for p, contour in enumerate(contours):
+        #     mask_layer = np.reshape(contour, (2 * contour.shape[0],))
+        #     x, y, w, h = cv2.boundingRect(contour)
+        #
+        #     # Se agrega esto por un bug, si la segmentación solo tiene 4 puntos da error en la validación
+        #     if len(mask_layer) == 4:
+        #         mask_layer = np.append(mask_layer, mask_layer[0:2])
+        # coco["annotations"].append({
+        #     "id": str(i) + "_" + str(j) + "_" + str(p),
+        #     "area": h * w,
+        #     "image_id": i,
+        #     "category_id": int(train_df.iloc[i].ClassId[j]),
+        #     "bbox": [x, y, w, h],
+        #     "segmentation": [[float(x) for x in mask_layer.tolist()]],
+        #     "iscrowd": 0
+        # })
+
+        for p, contour in enumerate(contours):
+            contour_array = contour.reshape(-1, 2)
+            px = [a[0] for a in contour_array]
+            py = [b[1] for b in contour_array]
+            poly = [(x + 0.5, y + 0.5) for x, y in zip(px, py)]
+            poly = [p for x in poly for p in x]
+            x0, y0 = int(np.min(px)), int(np.min(py))
+            x1, y1 = int(np.max(px)), int(np.max(py))
+            if (len(poly) % 2) == 0 and len(poly) >= 6:
+                coco["annotations"].append({
+                    "id": str(i) + "_" + str(j) + "_" + str(p),
+                    "area": abs(x0 - x1) * abs(y0 - y1),
+                    "image_id": i,
+                    "category_id": int(test_df.iloc[i].ClassId[j]),
+                    "bbox": [x0, y0, abs(x0 - x1), abs(y0 - y1)],
+                    "segmentation": [poly],
+                    "iscrowd": 0
+                })
+
+with open('test_coco_dataset.json', 'w') as f:
     json.dump(coco, f)
